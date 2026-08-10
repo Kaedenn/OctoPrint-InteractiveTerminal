@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "OctoPrint-Interactiveterminal"
+version = "0.1.0"
+description = "Autocomplete Marlin G-code commands entered in the terminal."
+authors = [
+    {name = "Kaedenn A. D. N.", email = "kaedenn@gmail.com"}
+]
+readme = {file = "README.md", content-type = "text/markdown"}
+dynamic = [
+    "license"
+]
+
+requires-python = ">=3.7, <4"
+
+# any additional requirements (besides OctoPrint) should be listed here
+dependencies = []
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = [
+    "octoprint_InteractiveTerminal",
+    "octoprint_InteractiveTerminal.*"
+]
+
+[project.entry-points."octoprint.plugin"]
+InteractiveTerminal = "octoprint_InteractiveTerminal"
+
+[project.urls]
+Homepage = "https://github.com/Kaedenn/OctoPrint-Interactiveterminal"
+
+[project.optional-dependencies]
+develop = [
+    "go-task-bin"
+]
