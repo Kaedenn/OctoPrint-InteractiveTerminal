@@ -1,11 +1,17 @@
 
 # Change Log
 
-## 1.0.0
+## v1.0.1
+
+Fix issue where clicking on the help link `(?)` did not open the documentation.
+
+Add simplified Markdown-style formatting support for the individual G-code help text.
+
+## v1.0.0
 
 Initial release.
 
-## 0.1.0
+## v0.1.0
 
 Initial commit.
 
