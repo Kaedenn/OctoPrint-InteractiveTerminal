@@ -4,3 +4,5 @@ include CHANGELOG.md
 recursive-include octoprint_InteractiveTerminal/templates *
 recursive-include octoprint_InteractiveTerminal/translations *
 recursive-include octoprint_InteractiveTerminal/static *
+global-exclude *.swp
+global-exclude *~

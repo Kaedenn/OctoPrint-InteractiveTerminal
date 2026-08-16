@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -47,6 +48,37 @@ def as_list(value: Any) -> list[Any]:
 
 def clean_markdown_body(text: str) -> str:
     return text.strip()
+
+
+def get_git_commit(path: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(path),
+                "rev-parse",
+                "HEAD",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+    return result.stdout.strip() or None
+
+
+def build_source_metadata(source_dir: Path) -> dict[str, Any]:
+    repository_root = source_dir.parent
+
+    return {
+        "project": "MarlinDocumentation",
+        "repository": "https://github.com/MarlinFirmware/MarlinDocumentation",
+        "license": "GPL-3.0",
+        "commit": get_git_commit(repository_root),
+    }
 
 
 def parse_document(filename: str, text: str) -> tuple[dict[str, Any], str]:
@@ -173,6 +205,7 @@ def build_database(source: Path) -> dict[str, Any]:
 
     return {
         "schema_version": SCHEMA_VERSION,
+        "source": build_source_metadata(source),
         "document_count": document_count,
         "command_count": len(commands),
         "variant_count": sum(len(c["variants"]) for c in commands.values()),

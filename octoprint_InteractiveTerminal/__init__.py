@@ -1,78 +1,201 @@
 # coding=utf-8
-from __future__ import absolute_import
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Kaedenn A. D. N.
 
-### (Don't forget to remove me)
-# This is a basic skeleton for your plugin's __init__.py. You probably want to adjust the class name of your plugin
-# as well as the plugin mixins it's subclassing from. This is really just a basic skeleton to get you started,
-# defining your plugin as a template plugin, settings and asset plugin. Feel free to add or remove mixins
-# as necessary.
-#
-# Take a look at the documentation on what other plugin mixins are available.
+"""
+This plugin adds autocompletion and G-code documentation to the terminal.
+"""
 
+from __future__ import annotations
+
+import threading
+from typing import Any, Optional
+
+import flask
 import octoprint.plugin
+from octoprint.events import Events
 
-class InteractiveterminalPlugin(octoprint.plugin.SettingsPlugin,
+
+class InteractiveTerminalPlugin(
+    octoprint.plugin.SettingsPlugin,
     octoprint.plugin.AssetPlugin,
-    octoprint.plugin.TemplatePlugin
+    octoprint.plugin.SimpleApiPlugin,
+    octoprint.plugin.EventHandlerPlugin,
 ):
+    """
+    Adds G-code-aware interactive assistance to OctoPrint's stock terminal.
 
-    ##~~ SettingsPlugin mixin
+    Static command documentation is served directly from this plugin's
+    ``static/`` tree.  The Python side owns only dynamic printer state such as
+    the detected firmware/dialect and the M115 capability report.
+    """
 
-    def get_settings_defaults(self):
+    def __init__(self) -> None:
+        super().__init__()
+
+        self._state_lock = threading.RLock()
+        self._firmware_name: Optional[str] = None
+        self._firmware_data: dict[str, Any] = {}
+        self._capabilities: dict[str, bool] = {}
+        self._dialect: Optional[str] = None
+
+    def is_api_protected(self) -> bool:
+        return True
+
+    # ------------------------------------------------------------------
+    # Internal state helpers
+
+    def _detect_dialect(
+        self,
+        firmware_name: Optional[str],
+        firmware_data: dict[str, Any]
+    ) -> Optional[str]:
+        """Map firmware identity reported by M115 to our command dialect key."""
+        candidates = [
+            firmware_name or "",
+            str(firmware_data.get("FIRMWARE_NAME", "")),
+        ]
+        identity = " ".join(candidates).casefold()
+
+        if "marlin" in identity:
+            return "marlin"
+
+        # Future dialects belong here, e.g. RepRapFirmware, Repetier, etc.
+
+        self._logger.info("Your firmware %s is unsupported", identity)
+        return None
+
+    def _state_snapshot(self) -> dict[str, Any]:
+        """Return a detached, JSON-safe snapshot of dynamic printer state."""
+        with self._state_lock:
+            return {
+                "firmware_name": self._firmware_name,
+                "firmware_data": dict(self._firmware_data),
+                "capabilities": dict(self._capabilities),
+                "dialect": self._dialect,
+            }
+
+    def _push_state(self) -> None:
+        """Push current dynamic state to connected OctoPrint web clients."""
+        self._plugin_manager.send_plugin_message(
+            self._identifier,
+            {
+                "type": "printer_state",
+                "state": self._state_snapshot(),
+            },
+        )
+
+    def _clear_printer_state(self) -> None:
+        with self._state_lock:
+            self._firmware_name = None
+            self._firmware_data = {}
+            self._capabilities = {}
+            self._dialect = None
+
+    # ------------------------------------------------------------------
+    # Firmware protocol hooks
+
+    def on_firmware_info(
+        self,
+        comm_instance,
+        firmware_name,
+        firmware_data,
+        *args,
+        **kwargs,
+    ) -> None:
+        """Receive OctoPrint's parsed M115 firmware identity report."""
+        data = dict(firmware_data or {})
+        dialect = self._detect_dialect(firmware_name, data)
+
+        with self._state_lock:
+            self._firmware_name = firmware_name
+            self._firmware_data = data
+            self._dialect = dialect
+
+        self._push_state()
+
+    def on_firmware_capability_report(
+        self,
+        comm_instance,
+        firmware_capabilities,
+        *args,
+        **kwargs,
+    ) -> None:
+        """Receive the completed parsed M115 Cap: report from OctoPrint."""
+        with self._state_lock:
+            self._capabilities = dict(firmware_capabilities or {})
+
+        self._push_state()
+
+    # ------------------------------------------------------------------
+    # SimpleApiPlugin mixin
+
+    def on_api_get(self, request):
+        """Provide the frontend with an initial dynamic-state snapshot."""
+        return flask.jsonify(self._state_snapshot())
+
+    # ------------------------------------------------------------------
+    # SettingsPlugin mixin
+
+    def get_settings_defaults(self) -> dict[str, object]:
         return {
-            # put your plugin's default settings here
+            "max_matches": 20,
         }
 
-    ##~~ AssetPlugin mixin
+    # ------------------------------------------------------------------
+    # AssetPlugin mixin
 
-    def get_assets(self):
-        # Define your plugin's asset files to automatically include in the
-        # core UI here.
+    def get_assets(self) -> dict[str, list[str]]:
         return {
-            "js": ["js/InteractiveTerminal.js"],
+            "js": [
+                "js/marlin.js",
+                "js/InteractiveTerminal.js",
+            ],
             "css": ["css/InteractiveTerminal.css"],
-            "less": ["less/InteractiveTerminal.less"]
         }
 
-    ##~~ Softwareupdate hook
+    # commands.json intentionally is not listed above.  It is data rather than
+    # an embeddable web asset, and OctoPrint serves files under static/ directly:
+    #   /plugin/<plugin-id>/static/commands.json
 
-    def get_update_information(self):
-        # Define the configuration for your plugin to use with the Software Update
-        # Plugin here. See https://docs.octoprint.org/en/main/bundledplugins/softwareupdate.html
-        # for details.
+    # ------------------------------------------------------------------
+    # EventHandlerPlugin mixin
+
+    def on_event(self, event, payload) -> None:
+        if event == Events.DISCONNECTED:
+            self._clear_printer_state()
+            self._push_state()
+
+    # ------------------------------------------------------------------
+    # Software update hook
+
+    def get_update_information(self) -> dict[str, object]:
         return {
             "InteractiveTerminal": {
-                "displayName": "Interactiveterminal Plugin",
+                "displayName": "Interactive Terminal Plugin",
                 "displayVersion": self._plugin_version,
-
-                # version check: github repository
                 "type": "github_release",
                 "user": "Kaedenn",
                 "repo": "OctoPrint-Interactiveterminal",
                 "current": self._plugin_version,
-
-                # update method: pip
                 "pip": "https://github.com/Kaedenn/OctoPrint-Interactiveterminal/archive/{target_version}.zip",
             }
         }
 
 
-# If you want your plugin to be registered within OctoPrint under a different name than what you defined in setup.py
-# ("OctoPrint-PluginSkeleton"), you may define that here. Same goes for the other metadata derived from setup.py that
-# can be overwritten via __plugin_xyz__ control properties. See the documentation for that.
-__plugin_name__ = "Interactiveterminal Plugin"
+__plugin_name__ = "Interactive Terminal Plugin"
+__plugin_pythoncompat__ = ">=3,<4"
 
-
-# Set the Python version your plugin is compatible with below. Recommended is Python 3 only for all new plugins.
-# OctoPrint 1.4.0 - 1.7.x run under both Python 3 and the end-of-life Python 2.
-# OctoPrint 1.8.0 onwards only supports Python 3.
-__plugin_pythoncompat__ = ">=3,<4"  # Only Python 3
 
 def __plugin_load__():
     global __plugin_implementation__
-    __plugin_implementation__ = InteractiveterminalPlugin()
+    __plugin_implementation__ = InteractiveTerminalPlugin()
 
     global __plugin_hooks__
     __plugin_hooks__ = {
-        "octoprint.plugin.softwareupdate.check_config": __plugin_implementation__.get_update_information
+        "octoprint.comm.protocol.firmware.info": __plugin_implementation__.on_firmware_info,
+        "octoprint.comm.protocol.firmware.capability_report": __plugin_implementation__.on_firmware_capability_report,
+        "octoprint.plugin.softwareupdate.check_config": __plugin_implementation__.get_update_information,
     }
+
+# vim: set ts=4 sts=4 sw=4:

@@ -1,5 +1,11 @@
 {
   "schema_version": 1,
+  "source": {
+    "project": "MarlinDocumentation",
+    "repository": "https://github.com/MarlinFirmware/MarlinDocumentation",
+    "license": "GPL-3.0",
+    "commit": "dcb5d0193c3d0591e3bd195adb7c37c7e489eb9a"
+  },
   "document_count": 252,
   "command_count": 291,
   "variant_count": 299,
