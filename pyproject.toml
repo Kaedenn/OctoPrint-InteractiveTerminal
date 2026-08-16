@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "OctoPrint-InteractiveTerminal"
-version = "0.1.0"
+version = "1.0.0"
 description = "Autocomplete Marlin G-code commands entered in the terminal."
 authors = [
     {name = "Kaedenn A. D. N.", email = "kaedenn@gmail.com"}

@@ -35,12 +35,13 @@
     padding: 5px 10px;
 
     white-space: nowrap;
-    cursor: default;
+    cursor: pointer;
     line-height: 1.4;
 }
 
+.interactive-terminal-autocomplete-item.selected,
 .interactive-terminal-autocomplete-item:hover {
-    background: #eee;
+    background: #ddd;
 }
 
 .interactive-terminal-autocomplete-code {

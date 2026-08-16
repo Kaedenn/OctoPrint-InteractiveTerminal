@@ -39,6 +39,14 @@ $(function() {
         self.commandCatalog = ko.observable(null);
         self.commands = ko.observable({});
 
+        self._autocomplete = {
+            input: null,
+            popup: null,
+            matches: [],
+            selectedIndex: -1,
+            keydownHandler: null
+        };
+
         /*
          * Runtime support classification derived from commands.json plus the
          * connected printer's M115 capability report.
@@ -49,16 +57,6 @@ $(function() {
         self.catalogReady = ko.observable(false);
         self.stateError = ko.observable(null);
         self.catalogError = ko.observable(null);
-
-        /*
-         * DOM state for the autocomplete popup. Keep this separate from
-         * Knockout state because we are augmenting OctoPrint's existing
-         * Terminal input in place.
-         */
-        self._autocomplete = {
-            input: null,
-            popup: null
-        };
 
         // One in-flight/completed catalog request is shared by all callers.
         let catalogRequest = null;
@@ -219,6 +217,37 @@ $(function() {
                 });
         };
 
+        self.commandLabel = function(code) {
+            const variant = self._displayVariantFor(code);
+
+            if (!variant) {
+                return "";
+            }
+
+            return variant.title || variant.brief || "";
+        };
+
+        self.onStartup = function() {
+            self.loadCommandCatalog();
+            self.loadPrinterState();
+        };
+
+        self.onStartupComplete = function() {
+            self._setupAutocomplete();
+        };
+
+        self.onDataUpdaterPluginMessage = function(plugin, message) {
+            if (
+                plugin !== PLUGIN_ID ||
+                !message ||
+                message.type !== "printer_state"
+            ) {
+                return;
+            }
+
+            self._setFirmwareState(message.state);
+        };
+
         /*
          * Python's get_settings_defaults() remains authoritative. This
          * fallback is only defensive in case settings have not yet been
@@ -242,6 +271,16 @@ $(function() {
             }
 
             return 20;
+        };
+
+        self.marlinDocumentationUrl = function(variant) {
+            if (!variant || typeof variant.source !== "string") {
+                return null;
+            }
+
+            const page = variant.source.replace(/\.md$/i, ".html");
+
+            return "https://marlinfw.org/docs/gcode/" + page;
         };
 
         /*
@@ -304,57 +343,6 @@ $(function() {
             };
         };
 
-        self._renderAutocomplete = function(matches) {
-            const popup = self._autocomplete.popup;
-
-            if (!popup || !popup.length) {
-                return;
-            }
-
-            popup.empty();
-
-            if (!Array.isArray(matches) || matches.length === 0) {
-                popup.hide();
-                return;
-            }
-
-            if (matches.length === 1) {
-                self._renderCommandDetails(matches[0]);
-                return;
-            }
-
-            matches.forEach(function(code) {
-                const item = $("<div>")
-                    .addClass("interactive-terminal-autocomplete-item")
-                    .attr("role", "option");
-
-                $("<span>")
-                    .addClass("interactive-terminal-autocomplete-code")
-                    .text(code)
-                    .appendTo(item);
-
-                $("<span>")
-                    .addClass("interactive-terminal-autocomplete-label")
-                    .text(self.commandLabel(code))
-                    .appendTo(item);
-
-                item.appendTo(popup);
-            });
-
-            self._positionAutocomplete();
-
-            popup
-                .off("mousedown.interactiveTerminal")
-                .on(
-                    "mousedown.interactiveTerminal",
-                    function(event) {
-                        event.preventDefault();
-                    }
-                );
-
-            popup.show();
-        };
-
         self._updateAutocomplete = function() {
             const input = self._autocomplete.input;
 
@@ -384,6 +372,9 @@ $(function() {
 
         self._hideAutocomplete = function() {
             const popup = self._autocomplete.popup;
+
+            self._autocomplete.matches = [];
+            self._autocomplete.selectedIndex = -1;
 
             if (popup && popup.length) {
                 popup.hide();
@@ -419,6 +410,33 @@ $(function() {
             self._autocomplete.input = input;
             self._autocomplete.popup = popup;
 
+            popup
+                .off(".interactiveTerminal")
+                .on(
+                    "mousedown.interactiveTerminal",
+                    ".interactive-terminal-autocomplete-item",
+                    function(event) {
+                        /*
+                         * Don't let clicking a suggestion blur the Terminal input
+                         * before the click handler runs.
+                         */
+                        event.preventDefault();
+                    }
+                )
+                .on(
+                    "click.interactiveTerminal",
+                    ".interactive-terminal-autocomplete-item",
+                    function(event) {
+                        event.preventDefault();
+
+                        const code = $(this).attr("data-code");
+
+                        if (code) {
+                            self._completeCommand(code);
+                        }
+                    }
+                );
+
             input.on(
                 "input.interactiveTerminal",
                 self._updateAutocomplete
@@ -432,6 +450,88 @@ $(function() {
             input.on(
                 "blur.interactiveTerminal",
                 self._hideAutocomplete
+            );
+
+            if (self._autocomplete.keydownHandler) {
+                input[0].removeEventListener(
+                    "keydown",
+                    self._autocomplete.keydownHandler,
+                    true
+                );
+            }
+
+            self._autocomplete.keydownHandler = function(event) {
+                const matches = self._autocomplete.matches;
+                const matchCount = matches.length;
+
+                /*
+                * Let OctoPrint submit the command normally, but clear our popup/state
+                * first so it doesn't linger after submission.
+                */
+                if (event.key === "Enter") {
+                    self._hideAutocomplete();
+                    return;
+                }
+
+                /*
+                 * Up/Down belongs to autocomplete only while there are multiple
+                 * choices. Otherwise allow OctoPrint's normal command-history
+                 * handler to receive the event unchanged.
+                 */
+                if (
+                    matchCount > 1 &&
+                    (event.key === "ArrowDown" || event.key === "ArrowUp")
+                ) {
+                    event.preventDefault();
+                    event.stopImmediatePropagation();
+
+                    if (event.key === "ArrowDown") {
+                        self._selectAutocompleteIndex(
+                            self._autocomplete.selectedIndex + 1
+                        );
+                    } else {
+                        self._selectAutocompleteIndex(
+                            self._autocomplete.selectedIndex - 1
+                        );
+                    }
+
+                    return;
+                }
+
+                /*
+                 * Tab completes whenever there is at least one candidate.
+                 *
+                 * With one match, complete that match.
+                 * With multiple matches, complete the currently selected one.
+                 */
+                if (event.key === "Tab" && matchCount > 0) {
+                    event.preventDefault();
+                    event.stopImmediatePropagation();
+
+                    const index =
+                        matchCount === 1
+                        ? 0
+                        : self._autocomplete.selectedIndex;
+
+                    self._completeCommand(matches[index]);
+                    return;
+                }
+
+                if (
+                    event.key === "Escape" &&
+                    self._autocomplete.popup &&
+                    self._autocomplete.popup.is(":visible")
+                ) {
+                    event.preventDefault();
+                    event.stopImmediatePropagation();
+                    self._hideAutocomplete();
+                }
+            };
+
+            input[0].addEventListener(
+                "keydown",
+                self._autocomplete.keydownHandler,
+                true
             );
 
             self._updateAutocomplete();
@@ -482,16 +582,6 @@ $(function() {
             }
 
             return command.variants[0] || null;
-        };
-
-        self.marlinDocumentationUrl = function(variant) {
-            if (!variant || typeof variant.source !== "string") {
-                return null;
-            }
-
-            const page = variant.source.replace(/\.md$/i, ".html");
-
-            return "https://marlinfw.org/docs/gcode/" + page;
         };
 
         self._renderCommandDetails = function(code) {
@@ -583,35 +673,121 @@ $(function() {
             popup.show();
         };
 
-        self.commandLabel = function(code) {
-            const variant = self._displayVariantFor(code);
+        self._renderAutocomplete = function(matches) {
+            const popup = self._autocomplete.popup;
 
-            if (!variant) {
-                return "";
-            }
-
-            return variant.title || variant.brief || "";
-        };
-
-        self.onStartup = function() {
-            self.loadCommandCatalog();
-            self.loadPrinterState();
-        };
-
-        self.onStartupComplete = function() {
-            self._setupAutocomplete();
-        };
-
-        self.onDataUpdaterPluginMessage = function(plugin, message) {
-            if (
-                plugin !== PLUGIN_ID ||
-                !message ||
-                message.type !== "printer_state"
-            ) {
+            if (!popup || !popup.length) {
                 return;
             }
 
-            self._setFirmwareState(message.state);
+            matches = Array.isArray(matches) ? matches : [];
+
+            self._autocomplete.matches = matches.slice();
+            self._autocomplete.selectedIndex =
+                matches.length > 0 ? 0 : -1;
+
+            popup.empty();
+
+            if (matches.length === 0) {
+                popup.hide();
+                return;
+            }
+
+            if (matches.length === 1) {
+                self._renderCommandDetails(matches[0]);
+                return;
+            }
+
+            matches.forEach(function(code, index) {
+                $("<div>")
+                    .addClass("interactive-terminal-autocomplete-item")
+                    .attr({
+                        role: "option",
+                        "data-index": index,
+                        "data-code": code,
+                        "aria-selected": "false"
+                    })
+                    .append(
+                        $("<span>")
+                        .addClass("interactive-terminal-autocomplete-code")
+                        .text(code)
+                    )
+                    .append(
+                        $("<span>")
+                        .addClass("interactive-terminal-autocomplete-label")
+                        .text(self.commandLabel(code))
+                    )
+                    .appendTo(popup);
+            });
+
+            self._positionAutocomplete();
+            popup.show();
+
+            // The first result is always selected initially.
+            self._selectAutocompleteIndex(0);
+        };
+
+        self._selectAutocompleteIndex = function(index) {
+            const popup = self._autocomplete.popup;
+            const matches = self._autocomplete.matches;
+
+            if (!popup || !popup.length || matches.length <= 1) {
+                return;
+            }
+
+            if (index < 0) {
+                index = matches.length - 1;
+            } else if (index >= matches.length) {
+                index = 0;
+            }
+
+            self._autocomplete.selectedIndex = index;
+
+            const items = popup.find(
+                ".interactive-terminal-autocomplete-item"
+            );
+
+            items
+                .removeClass("selected")
+                .attr("aria-selected", "false");
+
+            const selected = items.eq(index);
+
+            selected
+                .addClass("selected")
+                .attr("aria-selected", "true");
+
+            if (selected.length) {
+                selected[0].scrollIntoView({
+                    block: "nearest"
+                });
+            }
+        };
+
+        self._completeCommand = function(code) {
+            const input = self._autocomplete.input;
+
+            if (!input || !input.length || !code) {
+                return;
+            }
+
+            const text = input.val();
+            const match = text.match(/^(\s*)\S*(.*)$/);
+
+            if (!match) {
+                return;
+            }
+
+            const leading = match[1];
+            let remainder = match[2];
+
+            if (!remainder) {
+                remainder = " ";
+            }
+
+            input.val(leading + code + remainder);
+            input.trigger("input");
+            input.trigger("focus");
         };
 
         $(window)
