@@ -28,6 +28,7 @@ If you want to modify this plugin for any reason, you'll need to be able to gene
    * `source <path/to/venv>/bin/activate`
 3. Run the `extract_marlin_gcode.py` script on the `MarlinDocumentation/_gcode` directory:
    * `python3 scripts/extract_marlin_gcode.py MarlinDocumentation/_gcode -o octoprint_InteractiveTerminal/static/commands.json`
+   * To include custom G-codes, append additional source directories or ZIP archives before `-o`. All documents are combined, with duplicate G-codes retained as separate variants. Source metadata comes from the first source.
 
 ## License
 

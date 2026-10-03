@@ -8,6 +8,7 @@ Requires PyYAML:
 
 Examples:
     ./extract_marlin_gcode.py /path/to/MarlinDocumentation/_gcode
+    ./extract_marlin_gcode.py /path/to/MarlinDocumentation/_gcode /path/to/custom_gcodes
     ./extract_marlin_gcode.py commands.zip -o commands.json
 
 The output is keyed by literal G-code ("G0", "M104", ...), so it is convenient
@@ -174,11 +175,17 @@ def iter_sources(path: Path) -> Iterable[tuple[str, str]]:
     raise ValueError(f"{path}: expected an _gcode directory or a ZIP archive")
 
 
-def build_database(source: Path) -> dict[str, Any]:
+def build_database(source: Path, *additional_sources: Path) -> dict[str, Any]:
+    """Combine sources in order, keeping provenance metadata from the first."""
     commands: dict[str, dict[str, Any]] = {}
     document_count = 0
 
-    for filename, text in iter_sources(source):
+    documents = (
+        document
+        for path in (source, *additional_sources)
+        for document in iter_sources(path)
+    )
+    for filename, text in documents:
         metadata, body = parse_document(filename, text)
         doc = normalize_document(filename, metadata, body)
         document_count += 1
@@ -215,9 +222,14 @@ def build_database(source: Path) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Extract MarlinDocumentation _gcode YAML/Markdown into commands.json"
+        description="Extract MarlinDocumentation _gcode YAML/Markdown into commands.json",
+        epilog="""
+Example usage: python3 scripts/extract_marlin_gcode.py ./MarlinDocumentation/_gcode"""
     )
-    parser.add_argument("source", type=Path, help="_gcode directory or ZIP archive")
+    parser.add_argument(
+        "source", type=Path, nargs="+",
+        help="_gcode directories or ZIP archives; metadata comes from the first source",
+    )
     parser.add_argument(
         "-o", "--output", type=Path, default=Path("commands.json"),
         help="output JSON path (default: commands.json)",
@@ -228,7 +240,7 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        database = build_database(args.source)
+        database = build_database(*args.source)
     except (OSError, UnicodeError, ValueError, yaml.YAMLError, zipfile.BadZipFile) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
